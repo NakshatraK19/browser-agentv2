@@ -1,0 +1,206 @@
+[
+  {
+    "type": "scrape",
+    "task": "Go to https://example.com and extract: the main heading and description",
+    "result": {
+      "task": "Go to https://example.com and extract: the main heading and description",
+      "steps": [
+        {
+          "tool": "navigate",
+          "input": {
+            "url": "https://example.com"
+          }
+        },
+        {
+          "tool": "extract_content",
+          "input": {
+            "selector": "h1"
+          }
+        },
+        {
+          "tool": "extract_content",
+          "input": {
+            "selector": "p"
+          }
+        }
+      ],
+      "output": "Here's a summary of what was extracted from **https://example.com**:\n\n---\n\n### \ud83d\udccc Main Heading:\n> **Example Domain**\n\n### \ud83d\udcdd Description:\n> *\"This domain is for use in documentation examples without needing permission. Avoid use in operations.\"*\n\n---\n\nThe page is a simple placeholder domain maintained by IANA (Internet Assigned Numbers Authority), specifically designed for use in documentation and examples \u2014 no prior permission is needed to reference it.",
+      "success": true,
+      "step_count": 3,
+      "input_tokens": 10407,
+      "output_tokens": 284,
+      "estimated_cost_usd": 0.035481
+    }
+  },
+  {
+    "type": "research",
+    "task": "Research 'Python async programming best practices' by searching the web and gathering information from 2 different sources. Summarize the key findings.",
+    "result": {
+      "task": "Research 'Python async programming best practices' by searching the web and gathering information from 2 different sources. Summarize the key findings.",
+      "steps": [
+        {
+          "tool": "search_web",
+          "input": {
+            "query": "Python async programming best practices"
+          }
+        },
+        {
+          "tool": "navigate",
+          "input": {
+            "url": "https://docs.python.org/3/library/asyncio-dev.html"
+          }
+        },
+        {
+          "tool": "extract_content",
+          "input": {}
+        },
+        {
+          "tool": "scroll_page",
+          "input": {
+            "direction": "down",
+            "amount": 800
+          }
+        },
+        {
+          "tool": "scroll_page",
+          "input": {
+            "direction": "down",
+            "amount": 1200
+          }
+        },
+        {
+          "tool": "scroll_page",
+          "input": {
+            "direction": "down",
+            "amount": 1500
+          }
+        },
+        {
+          "tool": "scroll_page",
+          "input": {
+            "direction": "down",
+            "amount": 1500
+          }
+        },
+        {
+          "tool": "navigate",
+          "input": {
+            "url": "https://realpython.com/async-io-python/"
+          }
+        },
+        {
+          "tool": "wait_and_extract",
+          "input": {
+            "selector": "article",
+            "timeout": 8000
+          }
+        },
+        {
+          "tool": "navigate",
+          "input": {
+            "url": "https://superfastpython.com/python-asyncio-best-practices/"
+          }
+        },
+        {
+          "tool": "navigate",
+          "input": {
+            "url": "https://bbc.github.io/cloudfit-public-docs/asyncio/asyncio-part-1.html"
+          }
+        },
+        {
+          "tool": "navigate",
+          "input": {
+            "url": "https://bbc.github.io/cloudfit-public-docs/asyncio/asyncio-part-3.html"
+          }
+        },
+        {
+          "tool": "extract_content",
+          "input": {}
+        },
+        {
+          "tool": "scroll_page",
+          "input": {
+            "direction": "down",
+            "amount": 1500
+          }
+        },
+        {
+          "tool": "scroll_page",
+          "input": {
+            "direction": "down",
+            "amount": 2000
+          }
+        },
+        {
+          "tool": "navigate",
+          "input": {
+            "url": "https://bbc.github.io/cloudfit-public-docs/asyncio/asyncio-part-2.html"
+          }
+        },
+        {
+          "tool": "extract_content",
+          "input": {}
+        },
+        {
+          "tool": "scroll_page",
+          "input": {
+            "direction": "down",
+            "amount": 2000
+          }
+        },
+        {
+          "tool": "scroll_page",
+          "input": {
+            "direction": "down",
+            "amount": 3000
+          }
+        },
+        {
+          "tool": "scroll_page",
+          "input": {
+            "direction": "down",
+            "amount": 3000
+          }
+        },
+        {
+          "tool": "scroll_page",
+          "input": {
+            "direction": "down",
+            "amount": 1000
+          }
+        }
+      ],
+      "output": "I now have comprehensive information from both sources. Let me compile the full summary.\n\n---\n\n## \ud83d\udccb Research Summary: Python Async Programming Best Practices\n\nI successfully gathered information from **2 reliable sources**:\n\n---\n\n### \ud83d\udd17 Source 1: Official Python Documentation \u2014 *\"Developing with asyncio\"*\n**URL:** `https://docs.python.org/3/library/asyncio-dev.html`\n\n---\n\n### \ud83d\udd17 Source 2: BBC R&D Cloudfit Public Docs \u2014 *\"Python Asyncio Parts 1\u20133\"*\n**URL:** `https://bbc.github.io/cloudfit-public-docs/asyncio/`\n\n---\n\n## \u2705 Key Findings: Python Async Programming Best Practices\n\n---\n\n### \ud83d\udc1b 1. Use Debug Mode During Development\n*(Source 1)*\n- Enable asyncio debug mode during development to catch common mistakes early.\n- **How to enable:**\n  - Set environment variable: `PYTHONASYNCIODEBUG=1`\n  - Use `asyncio.run(main(), debug=True)`\n  - Call `loop.set_debug(True)`\n- Debug mode logs slow callbacks (>100ms), warns about non-thread-safe API misuse, and tracks unfinished tasks.\n\n---\n\n### \u26a0\ufe0f 2. Always `await` Your Coroutines\n*(Source 1)*\n- **Never call a coroutine function without `await`** (e.g., `coro()` instead of `await coro()`).\n- Python will emit a `RuntimeWarning` for unawaited coroutines.\n- Similarly, always schedule tasks with `asyncio.create_task()` if you don't want to await immediately.\n- Never-retrieved exceptions on tasks will also cause warnings \u2014 always handle task results.\n\n---\n\n### \ud83e\uddf5 3. Understand Thread Safety \u2014 asyncio is NOT Thread-Safe\n*(Source 1)*\n- **Almost all asyncio objects are not thread-safe** by design.\n- The event loop runs in a single thread (typically main thread); tasks and callbacks execute within it.\n- To safely interact with the event loop from another thread:\n  - Use `loop.call_soon_threadsafe(callback)` for callbacks.\n  - Use `asyncio.run_coroutine_threadsafe(coro, loop)` for coroutines from other threads.\n- For handling **signals**, the event loop **must** run in the main thread.\n\n---\n\n### \ud83d\udeab 4. Never Block the Event Loop\n*(Source 1 & 2)*\n- Avoid calling blocking (synchronous) I/O operations directly in async code \u2014 this blocks the entire event loop and all running coroutines.\n- Use `loop.run_in_executor()` with a `ThreadPoolExecutor` to offload blocking I/O to a separate thread.\n- Use `ProcessPoolExecutor` via `run_in_executor()` to offload CPU-heavy work to separate processes.\n- Similarly, **network logging can block the event loop** \u2014 use a separate thread for log handlers.\n\n---\n\n### \ud83d\udcdd 5. Logging: Configure Carefully\n*(Source 1)*\n- asyncio uses the `logging` module via the `\"asyncio\"` logger.\n- Default log level is `logging.INFO`. Adjust it as needed:\n  ```python\n  logging.getLogger(\"asyncio\").setLevel(logging.WARNING)\n  ```\n- Avoid logging handlers that perform network I/O inside the async event loop \u2014 they can block it.\n\n---\n\n### \ud83d\udd11 6. Understand `async def`, `await`, Coroutines, Tasks & Futures\n*(Source 2)*\n- **`async def`** creates a coroutine function. Calling it does **NOT** run the code \u2014 it returns a `Coroutine` object.\n- **`await`** is the core mechanism to run a coroutine; it can **only** be used inside `async def` blocks.\n- Three awaitable types:\n  - **Coroutine:** Awaitable once; runs its code when awaited.\n  - **Future:** Can be awaited multiple times; suspends task until `done` is `True`.\n  - **Task:** A Future created from a coroutine; runs \"concurrently\" in the event loop.\n- Create tasks with `asyncio.create_task(coro())` to run them concurrently without immediately awaiting.\n\n---\n\n### \ud83d\udd04 7. Use `async with` and `async for` for Resource Management\n*(Source 2 \u2014 Part 3)*\n- Use **`async with`** (Asynchronous Context Managers) for resources that require async setup/teardown (e.g., network connections, file handles with async I/O).\n- Use **`async for`** (Asynchronous Iterators) to iterate over async data sources (e.g., streaming data from a database or network).\n- **Best practice:** If an object needs setup/teardown involving I/O, make it an **asynchronous context manager**.\n\n---\n\n### \u23f8\ufe0f 8. Yielding Control to the Event Loop\n*(Source 2)*\n- There's no direct \"yield control\" primitive, but if you need to allow other tasks to run, use:\n  ```python\n  await asyncio.sleep(0)\n  ```\n- This pauses the current task and lets other pending tasks execute \u2014 useful for testing and debugging fairness.\n\n---\n\n### \ud83e\udde9 9. Async Generators: Handle with Care\n*(Source 1)*\n- **Close asynchronous generators explicitly** to avoid resource leaks.\n- **Create async generators only when the event loop is running.**\n- **Avoid concurrent iteration and closure of the same generator** \u2014 this can cause unexpected behavior.\n\n---\n\n## \ud83d\udddd\ufe0f Core Principle Summary\n\n| Best Practice | Key Takeaway |\n|---|---|\n| Debug Mode | Always use during development |\n| Always Await | Never call coroutines without `await` |\n| Thread Safety | Use `call_soon_threadsafe()` from other threads |\n| Avoid Blocking | Use `run_in_executor()` for blocking code |\n| Context Managers | Use `async with` for I/O resource management |\n| Iterators | Use `async for` for streaming async data |\n| Tasks | Use `create_task()` for true concurrency |\n| Error Handling | Always retrieve Task exceptions |\n\n---\n\n**In essence:** Python async programming with `asyncio` is powerful but requires discipline \u2014 always `await` coroutines, never block the event loop, respect thread safety boundaries, and use debug mode aggressively during development to catch subtle bugs early.",
+      "success": true,
+      "step_count": 21,
+      "input_tokens": 338288,
+      "output_tokens": 3185,
+      "estimated_cost_usd": 1.062639
+    }
+  },
+  {
+    "type": "summarize",
+    "task": "Go to https://httpbin.org/html and provide a comprehensive summary of the page content.",
+    "result": {
+      "task": "Go to https://httpbin.org/html and provide a comprehensive summary of the page content.",
+      "steps": [
+        {
+          "tool": "navigate",
+          "input": {
+            "url": "https://httpbin.org/html"
+          }
+        },
+        {
+          "tool": "extract_content",
+          "input": {}
+        }
+      ],
+      "output": "Here is a **comprehensive summary** of the page at `https://httpbin.org/html`:\n\n---\n\n## \ud83d\udcc4 Page Summary: `https://httpbin.org/html`\n\n### \ud83d\udd16 Title\n**Herman Melville \u2013 Moby-Dick**\n\n---\n\n### \ud83d\udcda Purpose of the Page\nThis is a **demo/test HTML page** served by **HTTPBin** (`httpbin.org`), a popular HTTP request & response testing service. It renders a simple HTML page containing a literary excerpt, commonly used by developers to test HTTP GET requests that return HTML content.\n\n---\n\n### \ud83d\udcd6 Content Overview\nThe page contains a single block of prose \u2014 an excerpt from **Herman Melville's *Moby-Dick***. The passage focuses on the character **Perth**, the ship's blacksmith, and tells his tragic backstory. Key themes and events in the passage include:\n\n1. **Perth on Deck**: Perth, the old blacksmith, keeps his portable forge on deck (rather than below in the hold) during mild weather. He is constantly in demand by the crew \u2014 headsmen, harpooneers, and bowsmen \u2014 for repairing and shaping weapons and boat gear.\n\n2. **His Stoic Character**: Despite his hardships and a \"chronically broken back,\" Perth works silently, patiently, and without complaint \u2014 his hammer's beat mirroring the beating of his heart.\n\n3. **The Loss of His Feet**: Perth walks with a painful gait that curiosity leads the sailors to investigate. The truth is revealed: on a bitter winter's midnight, he suffered frostbite so severe that he **lost the extremities of both feet**.\n\n4. **His Tragic Backstory**: Once a respected, prosperous artisan near sixty years of age \u2014 with a house, garden, loving wife, and three children \u2014 Perth's life unraveled due to **alcoholism** (metaphorically described as the \"Bottle Conjuror\"). A burglar (the bottle/alcohol) destroyed his home and happiness, and Perth himself unknowingly invited this ruin.\n\n5. **His Family Life Before Ruin**: His wife, happily listening to the sound of his hammer from their nursery above his basement workshop, rocked their children to sleep to that \"iron lullaby\" \u2014 a poignant contrast to the devastation that followed.\n\n6. **The Lament**: The passage closes with a sorrowful reflection \u2014 that it would have been kinder for Death to have taken Perth before his ruin, so his family might have at least grieved a venerable man rather than suffer poverty and disgrace.\n\n---\n\n### \ud83d\uddc2\ufe0f Technical Details\n| Property | Value |\n|---|---|\n| **URL** | `https://httpbin.org/html` |\n| **Content Type** | `text/html` |\n| **Structure** | Simple HTML with an `<h1>` heading and a single `<p>` paragraph |\n| **Use Case** | Testing HTTP clients, parsers, or scrapers that handle HTML responses |\n\n---\n\nThis page serves as both a functional **HTTP testing endpoint** and an unexpectedly rich piece of **classic American literature**, making it a memorable example for developers working with web tools.",
+      "success": true,
+      "step_count": 2,
+      "input_tokens": 11187,
+      "output_tokens": 838,
+      "estimated_cost_usd": 0.046131
+    }
+  }
+]

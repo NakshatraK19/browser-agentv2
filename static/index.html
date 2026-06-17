@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Browser Agent</title>
+<style>
+:root {
+  --bg: #080808;
+  --panel: #0f0f0f;
+  --border: #1c1c1c;
+  --accent: #6366f1;
+  --accent-dim: rgba(99,102,241,0.12);
+  --text: #e2e2e2;
+  --muted: #4a4a4a;
+  --green: #22c55e;
+  --amber: #f59e0b;
+  --red: #ef4444;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── header ──────────────────────────────────── */
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 20px;
+  height: 52px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+
+.logo {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  color: #fff;
+}
+.logo em { color: var(--accent); font-style: normal; }
+
+.sep { flex: 1; }
+
+.stat {
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  color: var(--muted);
+}
+.stat b { color: var(--text); font-weight: 500; }
+.stat.cost b { color: var(--green); }
+
+.dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: background 0.3s;
+}
+.dot.running { background: var(--amber); animation: pulse 1.2s ease-in-out infinite; }
+.dot.done    { background: var(--green); }
+.dot.error   { background: var(--red); }
+
+@keyframes pulse {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}
+
+/* ── task bar ─────────────────────────────────── */
+.task-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+
+.task-row { display: flex; gap: 8px; }
+
+#task-input {
+  flex: 1;
+  background: #141414;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 13px;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+#task-input:focus  { border-color: var(--accent); }
+#task-input::placeholder { color: var(--muted); }
+
+.controls { display: flex; gap: 6px; align-items: center; }
+
+#run-btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+  min-width: 72px;
+}
+#run-btn:hover:not(:disabled) { background: #5153cc; }
+#run-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.headless-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.headless-label input { cursor: pointer; accent-color: var(--accent); }
+
+.chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  background: #141414;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 3px 11px;
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.chip:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── main layout ──────────────────────────────── */
+.main {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* ── steps log ────────────────────────────────── */
+.log {
+  width: 300px;
+  min-width: 300px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.log-header {
+  padding: 10px 14px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#steps-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+#steps-list::-webkit-scrollbar { width: 3px; }
+#steps-list::-webkit-scrollbar-thumb { background: #222; border-radius: 2px; }
+
+.step {
+  padding: 9px 14px;
+  border-bottom: 1px solid #111;
+  animation: fadeUp 0.18s ease;
+}
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 3px;
+}
+
+.step-n {
+  font-size: 10px;
+  color: var(--muted);
+  font-family: monospace;
+  min-width: 22px;
+}
+
+.badge {
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'SF Mono', ui-monospace, monospace;
+  color: var(--amber);
+  background: rgba(245,158,11,0.1);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.step-tok {
+  font-size: 10px;
+  color: #333;
+  font-family: monospace;
+  margin-left: auto;
+}
+
+.step-body {
+  font-size: 11px;
+  color: #666;
+  line-height: 1.45;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* ── preview pane ─────────────────────────────── */
+.preview {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #050505;
+}
+
+.preview-header {
+  padding: 10px 14px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.screenshot-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  position: relative;
+  overflow: hidden;
+}
+
+.empty-state {
+  text-align: center;
+  color: #2a2a2a;
+}
+.empty-state svg { display: block; margin: 0 auto 10px; }
+.empty-state p { font-size: 13px; }
+
+#screenshot-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  display: none;
+  box-shadow: 0 4px 32px rgba(0,0,0,0.6);
+}
+
+/* ── output + actions ────────────────────────── */
+#output-area {
+  border-top: 1px solid var(--border);
+  padding: 12px 16px;
+  max-height: 140px;
+  overflow-y: auto;
+  display: none;
+  flex-shrink: 0;
+}
+#output-area h4 {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+#output-text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #aaa;
+  white-space: pre-wrap;
+}
+
+#action-bar {
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#status-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+#gif-link {
+  margin-left: auto;
+  background: #141414;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-size: 12px;
+  text-decoration: none;
+  transition: border-color 0.15s, color 0.15s;
+}
+#gif-link:hover { border-color: var(--accent); color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Browser<em>Agent</em></div>
+  <div class="sep"></div>
+  <div class="stat">tokens <b id="h-tokens">0</b></div>
+  <div class="stat">steps <b id="h-steps">0</b></div>
+  <div class="stat cost">cost <b id="h-cost">$0.0000</b></div>
+  <div class="dot" id="status-dot"></div>
+</header>
+
+<div class="task-bar">
+  <div class="task-row">
+    <input id="task-input" type="text"
+      placeholder="Describe a task, e.g. Search for the latest Python release and summarize what's new" />
+    <div class="controls">
+      <label class="headless-label">
+        <input type="checkbox" id="show-browser"> Show browser
+      </label>
+      <button id="run-btn">Run</button>
+    </div>
+  </div>
+  <div class="chips" id="chips"></div>
+</div>
+
+<div class="main">
+  <div class="log">
+    <div class="log-header">Steps</div>
+    <div id="steps-list"></div>
+  </div>
+
+  <div class="preview">
+    <div class="preview-header">Live Browser</div>
+    <div class="screenshot-area">
+      <div class="empty-state" id="empty-state">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="1" stroke-linecap="round">
+          <rect x="2" y="3" width="20" height="14" rx="2.5"/>
+          <line x1="8" y1="21" x2="16" y2="21"/>
+          <line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+        <p>Run a task to see the agent work</p>
+      </div>
+      <img id="screenshot-img" alt="Browser screenshot" />
+    </div>
+
+    <div id="output-area">
+      <h4>Output</h4>
+      <div id="output-text"></div>
+    </div>
+
+    <div id="action-bar">
+      <span id="status-label"></span>
+      <a id="gif-link" href="#" download="agent-run.gif">⬇ Download GIF</a>
+    </div>
+  </div>
+</div>
+
+<script>
+const CHIPS = [
+  "Find the latest Python release and summarize what's new",
+  "Search for the cheapest MacBook Air on Google Shopping",
+  "Go to Wikipedia and summarize the article on Quantum Computing",
+  "Look up today's top Hacker News stories and list the titles",
+];
+
+// Populate chips
+const chipsEl = document.getElementById('chips');
+CHIPS.forEach(text => {
+  const chip = document.createElement('button');
+  chip.className = 'chip';
+  chip.textContent = text;
+  chip.onclick = () => { taskInput.value = text; taskInput.focus(); };
+  chipsEl.appendChild(chip);
+});
+
+const taskInput  = document.getElementById('task-input');
+const runBtn     = document.getElementById('run-btn');
+const stepsList  = document.getElementById('steps-list');
+const screenshotImg = document.getElementById('screenshot-img');
+const emptyState = document.getElementById('empty-state');
+const outputArea = document.getElementById('output-area');
+const outputText = document.getElementById('output-text');
+const actionBar  = document.getElementById('action-bar');
+const statusLabel = document.getElementById('status-label');
+const gifLink    = document.getElementById('gif-link');
+const statusDot  = document.getElementById('status-dot');
+const hTokens    = document.getElementById('h-tokens');
+const hSteps     = document.getElementById('h-steps');
+const hCost      = document.getElementById('h-cost');
+const showBrowser = document.getElementById('show-browser');
+
+let currentStepNum = 0;
+let lastTokensEvent = null;
+
+function setScreenshot(b64) {
+  screenshotImg.src = 'data:image/png;base64,' + b64;
+  screenshotImg.style.display = 'block';
+  emptyState.style.display = 'none';
+}
+
+function addStep(stepNum, tool, inputObj, result) {
+  currentStepNum = stepNum;
+  hSteps.textContent = currentStepNum;
+
+  const inputSummary = Object.entries(inputObj || {})
+    .map(([, v]) => String(v).slice(0, 50))
+    .join(' · ') || '—';
+
+  const toks = lastTokensEvent
+    ? `${lastTokensEvent.step_in}↑${lastTokensEvent.step_out}↓`
+    : '';
+
+  const div = document.createElement('div');
+  div.className = 'step';
+  div.innerHTML = `
+    <div class="step-head">
+      <span class="step-n">#${stepNum}</span>
+      <span class="badge">${esc(tool)}</span>
+      <span class="step-tok">${toks}</span>
+    </div>
+    <div class="step-body">${esc(inputSummary)} → ${esc(String(result).slice(0, 80))}</div>
+  `;
+  stepsList.appendChild(div);
+  stepsList.scrollTop = stepsList.scrollHeight;
+}
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function handleEvent(ev) {
+  if (ev.type === 'screenshot') {
+    setScreenshot(ev.data);
+
+  } else if (ev.type === 'tokens') {
+    lastTokensEvent = ev;
+    hTokens.textContent = (ev.total_in + ev.total_out).toLocaleString();
+    hCost.textContent = '$' + ev.cost_usd.toFixed(4);
+
+  } else if (ev.type === 'step') {
+    if (ev.screenshot) setScreenshot(ev.screenshot);
+    addStep(ev.step_num, ev.tool, ev.input, ev.result);
+
+  } else if (ev.type === 'done') {
+    statusDot.className = 'dot done';
+    runBtn.disabled = false;
+    runBtn.textContent = 'Run';
+
+    if (ev.output) {
+      outputArea.style.display = 'block';
+      outputText.textContent = ev.output;
+    }
+
+    actionBar.style.display = 'flex';
+    if (ev.success) {
+      statusLabel.textContent = '✓ Complete';
+      statusLabel.style.color = 'var(--green)';
+    } else {
+      statusLabel.textContent = '⚠ Incomplete';
+      statusLabel.style.color = 'var(--amber)';
+    }
+
+    if (ev.gif_b64) {
+      gifLink.href = 'data:image/gif;base64,' + ev.gif_b64;
+      gifLink.style.display = 'inline-block';
+    } else {
+      gifLink.style.display = 'none';
+    }
+
+  } else if (ev.type === 'error') {
+    statusDot.className = 'dot error';
+    runBtn.disabled = false;
+    runBtn.textContent = 'Run';
+    const div = document.createElement('div');
+    div.className = 'step';
+    div.innerHTML = `<div class="step-head"><span class="badge" style="color:var(--red);background:rgba(239,68,68,0.1)">error</span></div>
+      <div class="step-body">${esc(ev.message)}</div>`;
+    stepsList.appendChild(div);
+  }
+}
+
+async function run() {
+  const task = taskInput.value.trim();
+  if (!task || runBtn.disabled) return;
+
+  // Reset
+  stepsList.innerHTML = '';
+  currentStepNum = 0;
+  lastTokensEvent = null;
+  hTokens.textContent = '0';
+  hSteps.textContent = '0';
+  hCost.textContent = '$0.0000';
+  screenshotImg.style.display = 'none';
+  emptyState.style.display = 'block';
+  outputArea.style.display = 'none';
+  actionBar.style.display = 'none';
+
+  runBtn.disabled = true;
+  runBtn.textContent = '…';
+  statusDot.className = 'dot running';
+
+  try {
+    const res = await fetch('/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task,
+        headless: !showBrowser.checked,
+        max_steps: 25,
+      }),
+    });
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try { handleEvent(JSON.parse(line.slice(6))); } catch {}
+        }
+      }
+    }
+  } catch (e) {
+    statusDot.className = 'dot error';
+    runBtn.disabled = false;
+    runBtn.textContent = 'Run';
+    console.error(e);
+  }
+}
+
+runBtn.addEventListener('click', run);
+taskInput.addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
+</script>
+</body>
+</html>
