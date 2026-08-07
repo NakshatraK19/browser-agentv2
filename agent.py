@@ -229,7 +229,7 @@ def _trim_screenshots(messages: list, keep_last: int = 3) -> list:
 
 
 class BrowserAgent:
-    def __init__(self, headless: bool = True, model: str = "claude-sonnet-4-6"):
+    def __init__(self, headless: bool = True, model: str = "claude-3-5-sonnet-latest"):
         self.headless = headless
         self.model = model
         self.client = Anthropic()
@@ -412,7 +412,7 @@ class BrowserAgent:
             total_output_tokens += step_out
             print(f"  Step {step_num + 1}: {step_in} in / {step_out} out tokens")
 
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": [b.model_dump() for b in response.content]})
 
             if response.stop_reason == "end_turn":
                 for block in response.content:
@@ -555,7 +555,7 @@ class BrowserAgent:
                 "cost_usd": current_cost,
             }
 
-            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "assistant", "content": [b.model_dump() for b in response.content]})
 
             if response.stop_reason == "end_turn":
                 for block in response.content:
