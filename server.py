@@ -29,7 +29,7 @@ class RunRequest(BaseModel):
 
 
 def _agent_thread(q: queue.Queue, task: str, headless: bool, max_steps: int) -> None:
-    """Run BrowserAgent in a dedicated OS thread with its own event loop.
+    """Run BrowserAgent in a dedicated OS thread with its own event loop (Windows fallback).
 
     On Windows, uvicorn's SelectorEventLoop doesn't support subprocess creation
     (which Playwright needs). Running in a separate thread with a ProactorEventLoop
@@ -38,7 +38,7 @@ def _agent_thread(q: queue.Queue, task: str, headless: bool, max_steps: int) -> 
     if sys.platform == "win32":
         loop = asyncio.ProactorEventLoop()
     else:
-        loop = asyncio.new_event_loop()
+        loop = asyncio.DefaultEventLoopPolicy().new_event_loop()
     asyncio.set_event_loop(loop)
 
     async def _run():
@@ -66,6 +66,23 @@ async def index():
 
 @app.post("/run")
 async def run_task(req: RunRequest):
+    if sys.platform != "win32":
+        async def stream_linux():
+            try:
+                async with BrowserAgent(headless=req.headless) as agent:
+                    async for event in agent.run_streaming(req.task, req.max_steps):
+                        yield f"data: {json.dumps(event)}\n\n"
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+        return StreamingResponse(
+            stream_linux(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     q: queue.Queue = queue.Queue()
     Thread(
         target=_agent_thread,
@@ -97,4 +114,4 @@ if __name__ == "__main__":
     import os
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run("server:app", host="0.0.0.0", port=port, reload=False)
+    uvicorn.run("server:app", host="0.0.0.0", port=port, loop="asyncio", reload=False)

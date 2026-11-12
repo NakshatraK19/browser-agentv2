@@ -265,7 +265,26 @@ class BrowserAgent:
         self._page: Page | None = None
 
     async def _start_browser(self) -> None:
-        self._playwright = await async_playwright().start()
+        try:
+            self._playwright = await async_playwright().start()
+        except Exception as e:
+            diag = ""
+            try:
+                import subprocess
+                from playwright._impl._driver import compute_driver_executable, get_driver_env
+                exe, cli = compute_driver_executable()
+                res = subprocess.run(
+                    [exe, cli, "--version"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    env=get_driver_env(),
+                )
+                diag = f" [driver rc={res.returncode} err={res.stderr.strip() or res.stdout.strip()}]"
+            except Exception as de:
+                diag = f" [driver check failed: {de}]"
+            raise RuntimeError(f"{e}{diag}") from e
+
         self._browser = await self._playwright.chromium.launch(
             headless=self.headless,
             args=_CHROMIUM_ARGS,
