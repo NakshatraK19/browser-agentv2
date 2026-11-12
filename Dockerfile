@@ -12,5 +12,6 @@ RUN pip install --no-cache-dir -r requirements.txt \
 COPY . .
 
 ENV PYTHONUNBUFFERED=1
+ENV NODE_OPTIONS="--max-old-space-size=192"
 
 CMD ["python", "server.py"]

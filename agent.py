@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import os
+import sys
 from typing import Any
 from urllib.parse import quote_plus
 
@@ -230,8 +232,31 @@ def _trim_screenshots(messages: list, keep_last: int = 3) -> list:
     return msgs
 
 
+_CHROMIUM_ARGS = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-extensions",
+    "--disable-background-networking",
+    "--disable-default-apps",
+    "--disable-sync",
+    "--no-first-run",
+    "--mute-audio",
+    "--hide-scrollbars",
+    "--disable-site-isolation-trials",
+    "--disable-features=IsolateOrigins,site-per-process",
+    "--renderer-process-limit=1",
+    "--js-flags=--max-old-space-size=256",
+]
+
+
 class BrowserAgent:
     def __init__(self, headless: bool = True, model: str = "claude-sonnet-4-6"):
+        # Force headless on Linux servers/containers without an X display
+        if sys.platform not in ("win32", "darwin") and not os.environ.get("DISPLAY"):
+            headless = True
         self.headless = headless
         self.model = model
         self.client = Anthropic()
@@ -239,30 +264,71 @@ class BrowserAgent:
         self._browser: Browser | None = None
         self._page: Page | None = None
 
-    async def __aenter__(self):
+    async def _start_browser(self) -> None:
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(
             headless=self.headless,
-            args=["--no-sandbox", "--disable-setuid-sandbox"],
+            args=_CHROMIUM_ARGS,
         )
         self._page = await self._browser.new_page(viewport={"width": 1024, "height": 640})
         self._page.set_default_timeout(10_000)  # 10s instead of Playwright's 30s default
+
+    async def _close_browser(self) -> None:
+        if self._page:
+            try:
+                await self._page.close()
+            except Exception:
+                pass
+            self._page = None
+        if self._browser:
+            try:
+                await self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if self._playwright:
+            try:
+                await self._playwright.stop()
+            except Exception:
+                pass
+            self._playwright = None
+
+    async def _restart_browser(self) -> None:
+        await self._close_browser()
+        await self._start_browser()
+
+    async def __aenter__(self):
+        await self._start_browser()
         return self
 
     async def __aexit__(self, *args):
-        if self._browser:
-            await self._browser.close()
-        if self._playwright:
-            await self._playwright.stop()
+        await self._close_browser()
 
     async def _screenshot(self) -> str:
-        data = await self._page.screenshot(type="jpeg", quality=70)
-        return base64.standard_b64encode(data).decode()
+        for attempt in range(2):
+            try:
+                if not self._page:
+                    await self._restart_browser()
+                data = await self._page.screenshot(type="jpeg", quality=70, timeout=5_000)
+                return base64.standard_b64encode(data).decode()
+            except Exception as e:
+                err = str(e)
+                if attempt == 0 and any(
+                    k in err for k in ("Connection closed", "Target closed", "has been closed", "crashed")
+                ):
+                    try:
+                        await self._restart_browser()
+                    except Exception:
+                        return ""
+                else:
+                    return ""
+        return ""
 
     # ── tool implementations ──────────────────────────────────────────────────
 
     async def _navigate(self, url: str) -> str:
-        await self._page.goto(url)
+        await self._page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+        await self._page.wait_for_timeout(500)
         return f"Navigated to {url}"
 
     async def _click_element(self, selector: str) -> str:
@@ -337,7 +403,8 @@ class BrowserAgent:
 
     async def _search_web(self, query: str) -> str:
         url = "https://www.google.com/search?q=" + quote_plus(query)
-        await self._page.goto(url)
+        await self._page.goto(url, wait_until="domcontentloaded", timeout=15_000)
+        await self._page.wait_for_timeout(500)
         return f"Searched: {query}"
 
     async def _get_page_info(self) -> str:
@@ -386,8 +453,22 @@ class BrowserAgent:
                 case _:
                     result = f"Unknown tool: {name}"
         except Exception as e:
+            err = str(e)
+            if any(
+                k in err
+                for k in ("Connection closed", "Target closed", "has been closed", "crashed")
+            ):
+                try:
+                    await self._restart_browser()
+                    return (
+                        "Tool failed because the target page crashed the browser. "
+                        "The browser has been restarted; try a lighter page or search query.",
+                        False,
+                    )
+                except Exception as restart_err:
+                    return f"Browser crashed and restart failed: {str(restart_err)[:200]}", False
             # Return the error as a result so Claude can try a different approach
-            return f"Tool failed ({type(e).__name__}): {str(e)[:300]}", True
+            return f"Tool failed ({type(e).__name__}): {err[:300]}", True
 
         return result, name not in _NO_SCREENSHOT
 
@@ -401,25 +482,25 @@ class BrowserAgent:
         success = False
 
         screenshot_b64 = await self._screenshot()
-        messages = [
+        init_content: list[dict] = []
+        if screenshot_b64:
+            init_content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": screenshot_b64,
+                    },
+                }
+            )
+        init_content.append(
             {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": screenshot_b64,
-                        },
-                    },
-                    {
-                        "type": "text",
-                        "text": f"Task: {task}\n\nComplete this task using the available tools.",
-                    },
-                ],
+                "type": "text",
+                "text": f"Task: {task}\n\nComplete this task using the available tools.",
             }
-        ]
+        )
+        messages = [{"role": "user", "content": init_content}]
 
         for step_num in range(max_steps):
             response = await asyncio.to_thread(
@@ -475,16 +556,17 @@ class BrowserAgent:
                     content: list[dict] = [{"type": "text", "text": result_text}]
                     if take_screenshot:
                         screenshot_b64 = await self._screenshot()
-                        content.append(
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": screenshot_b64,
-                                },
-                            }
-                        )
+                        if screenshot_b64:
+                            content.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": screenshot_b64,
+                                    },
+                                }
+                            )
 
                     tool_results.append(
                         {
@@ -528,28 +610,27 @@ class BrowserAgent:
         success = False
 
         screenshot_b64 = await self._screenshot()
-        screenshots.append(screenshot_b64)
-        yield {"type": "screenshot", "data": screenshot_b64}
-
-        messages = [
+        init_content: list[dict] = []
+        if screenshot_b64:
+            screenshots.append(screenshot_b64)
+            yield {"type": "screenshot", "data": screenshot_b64}
+            init_content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": screenshot_b64,
+                    },
+                }
+            )
+        init_content.append(
             {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": screenshot_b64,
-                        },
-                    },
-                    {
-                        "type": "text",
-                        "text": f"Task: {task}\n\nComplete this task using the available tools.",
-                    },
-                ],
+                "type": "text",
+                "text": f"Task: {task}\n\nComplete this task using the available tools.",
             }
-        ]
+        )
+        messages = [{"role": "user", "content": init_content}]
 
         for step_num in range(max_steps):
             response = await asyncio.to_thread(
@@ -626,18 +707,19 @@ class BrowserAgent:
 
                     if take_screenshot:
                         screenshot_b64 = await self._screenshot()
-                        screenshots.append(screenshot_b64)
-                        new_screenshot = screenshot_b64
-                        content.append(
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": screenshot_b64,
-                                },
-                            }
-                        )
+                        if screenshot_b64:
+                            screenshots.append(screenshot_b64)
+                            new_screenshot = screenshot_b64
+                            content.append(
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": screenshot_b64,
+                                    },
+                                }
+                            )
 
                     yield {
                         "type": "step",
