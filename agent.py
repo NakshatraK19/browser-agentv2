@@ -1,9 +1,13 @@
 import asyncio
 import base64
+from html import unescape
+from html.parser import HTMLParser
 import os
+import re
 import sys
+import textwrap
 from typing import Any
-from urllib.parse import quote_plus
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
@@ -252,6 +256,470 @@ _CHROMIUM_ARGS = [
 ]
 
 
+class _DOMExtractor(HTMLParser):
+    """Lightweight HTML parser for serverless fallback mode."""
+
+    _SKIP_TAGS = {"script", "style", "noscript", "svg", "path", "meta", "link", "iframe"}
+    _BLOCK_TAGS = {"h1", "h2", "h3", "h4", "p", "li", "td", "th", "pre", "blockquote", "article", "section", "div"}
+
+    def __init__(self, base_url: str):
+        super().__init__(convert_charrefs=True)
+        self.base_url = base_url
+        self.title = ""
+        self.blocks: list[tuple[str, str, str]] = []  # (kind, text, href)
+        self.links: list[tuple[str, str, str]] = []   # (text, abs_url, attrs_str)
+        self.tag_texts: dict[str, list[str]] = {}
+        self._skip_depth = 0
+        self._in_title = False
+        self._cur_tag = ""
+        self._cur_attrs: dict[str, str] = {}
+        self._cur_href = ""
+        self._buf: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS:
+            self._skip_depth += 1
+            return
+        if self._skip_depth > 0:
+            return
+        attr_dict = {k.lower(): (v or "") for k, v in attrs}
+        if tag == "title":
+            self._in_title = True
+            self._buf = []
+        elif tag in ("h1", "h2", "h3", "h4", "p", "li", "pre"):
+            self._flush()
+            self._cur_tag = tag
+            self._cur_attrs = attr_dict
+        elif tag == "a":
+            href = attr_dict.get("href", "").strip()
+            if href and not href.startswith(("javascript:", "#", "mailto:")):
+                self._cur_href = urljoin(self.base_url, href)
+                self._cur_attrs = attr_dict
+        elif tag in ("br", "hr", "tr", "div", "section", "article", "header", "footer", "nav", "main"):
+            self._flush()
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in self._SKIP_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if self._skip_depth > 0:
+            return
+        if tag == "title":
+            self._in_title = False
+            self.title = " ".join("".join(self._buf).split())
+            self._buf = []
+        elif tag == "a":
+            text = " ".join("".join(self._buf).split())
+            if text and self._cur_href:
+                attrs_s = f"{self._cur_attrs.get('id', '')} {self._cur_attrs.get('class', '')}".strip()
+                self.links.append((text, self._cur_href, attrs_s))
+                self.blocks.append(("link", text, self._cur_href))
+                self.tag_texts.setdefault("a", []).append(text)
+                self._buf = []
+            self._cur_href = ""
+        elif tag in ("h1", "h2", "h3", "h4", "p", "li", "pre"):
+            self._flush()
+            self._cur_tag = ""
+
+    def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0:
+            return
+        if self._in_title or self._cur_href or self._cur_tag:
+            self._buf.append(data)
+        else:
+            cleaned = " ".join(data.split())
+            if len(cleaned) > 2:
+                self.blocks.append(("text", cleaned, ""))
+
+    def _flush(self) -> None:
+        if not self._buf:
+            return
+        text = " ".join("".join(self._buf).split())
+        self._buf = []
+        if not text:
+            return
+        tag = self._cur_tag or "text"
+        kind = tag if tag in ("h1", "h2", "h3") else "text"
+        self.blocks.append((kind, text, self._cur_href))
+        self.tag_texts.setdefault(tag, []).append(text)
+        for cls in self._cur_attrs.get("class", "").split():
+            self.tag_texts.setdefault(f".{cls}", []).append(text)
+        if self._cur_attrs.get("id"):
+            self.tag_texts.setdefault(f"#{self._cur_attrs['id']}", []).append(text)
+
+
+class _DummyLocator:
+    def __init__(self, page: "_HttpBrowserPage", selector: str):
+        self._page = page
+        self._selector = selector
+
+    @property
+    def first(self) -> "_DummyLocator":
+        return self
+
+    async def wait_for(self, state: str = "attached", timeout: int = 3000) -> None:
+        return None
+
+    async def all_inner_texts(self) -> list[str]:
+        return self._page._query_selector_texts(self._selector)
+
+    async def inner_text(self, timeout: int = 3000) -> str:
+        texts = self._page._query_selector_texts(self._selector)
+        return "\n".join(texts) if texts else await self._page.inner_text("body")
+
+    async def click(self, timeout: int = 3000) -> None:
+        await self._page.click(self._selector, timeout=timeout)
+
+    async def fill(self, value: str, timeout: int = 3000) -> None:
+        await self._page.fill(self._selector, value, timeout=timeout)
+
+
+class _DummyKeyboard:
+    def __init__(self, page: "_HttpBrowserPage"):
+        self._page = page
+
+    async def press(self, key: str) -> None:
+        if key.lower() == "enter" and self._page._last_input:
+            q = self._page._last_input
+            await self._page.goto("https://www.google.com/search?q=" + quote_plus(q))
+
+
+class _HttpBrowserPage:
+    """Serverless-compatible browser page engine (httpx + HTML parser + Pillow renderer).
+
+    Used automatically when running on platforms like Vercel where Playwright's native
+    Node/Chromium binaries cannot execute due to missing OS shared libraries.
+    """
+
+    def __init__(self) -> None:
+        import httpx
+        self._client = httpx.AsyncClient(
+            follow_redirects=True,
+            timeout=15.0,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/125.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        self.url: str = "about:blank"
+        self._title: str = "New Tab"
+        self._blocks: list[tuple[str, str, str]] = []
+        self._links: list[tuple[str, str, str]] = []
+        self._tag_texts: dict[str, list[str]] = {}
+        self._body_text: str = ""
+        self._scroll_y: int = 0
+        self._last_input: str = ""
+        self.keyboard = _DummyKeyboard(self)
+
+    def set_default_timeout(self, timeout: int) -> None:
+        pass
+
+    async def wait_for_timeout(self, ms: int) -> None:
+        await asyncio.sleep(min(ms, 200) / 1000.0)
+
+    async def title(self) -> str:
+        return self._title
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+    def _extract_search_query(self, url: str) -> str | None:
+        parsed = urlparse(url)
+        host = parsed.netloc.lower()
+        qs = parse_qs(parsed.query)
+        if "google." in host and (
+            parsed.path.startswith("/search") or "/flights" in parsed.path or "/travel" in parsed.path
+        ):
+            q = (qs.get("q") or [""])[0]
+            if not q and "/flights" in parsed.path:
+                q = "flights"
+            if qs.get("tbm") == ["shop"] and q and "price" not in q.lower():
+                q = f"{q} price buy online"
+            return q or None
+        if "duckduckgo.com" in host and qs.get("q"):
+            return qs["q"][0]
+        if "bing.com" in host and parsed.path.startswith("/search") and qs.get("q"):
+            return qs["q"][0]
+        return None
+
+    async def _search_fallback(self, query: str, display_url: str) -> None:
+        self.url = display_url
+        self._title = f"{query} - Search Results"
+        self._scroll_y = 0
+        self._blocks = [("h1", f"Search results for: {query}", "")]
+        self._links = []
+        self._tag_texts = {"h1": [f"Search results for: {query}"]}
+        results: list[tuple[str, str, str]] = []
+
+        # 1. Try Yahoo Search HTML (reliable from cloud/datacenter IPs)
+        try:
+            resp = await self._client.get(
+                "https://search.yahoo.com/search",
+                params={"p": query, "n": "10"},
+            )
+            if resp.status_code == 200:
+                html = resp.text
+                # Extract result blocks from Yahoo Search
+                for m in re.finditer(
+                    r'<h3[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?</h3>(.*?)(?=<h3|<div class="dd pagination"|$)',
+                    html,
+                    re.S | re.I,
+                ):
+                    raw_href, raw_title, rest = unescape(m.group(1)), unescape(m.group(2)), unescape(m.group(3))
+                    title_clean = re.sub(r"<[^>]+>", " ", raw_title)
+                    title_clean = " ".join(title_clean.split())
+                    if not title_clean or "yahoo.com/preferences" in raw_href or "bing.com/aclick" in raw_href:
+                        continue
+                    # Decode Yahoo RU= redirect if present
+                    ru_match = re.search(r"/RU=([^/]+)/", raw_href)
+                    real_url = unquote(ru_match.group(1)) if ru_match else raw_href
+                    if any(
+                        ad in real_url.lower()
+                        for ad in ("yahoo.com", "bing.com/aclick", "doubleclick.net", "googleadservices")
+                    ):
+                        continue
+                    snip_match = re.search(
+                        r'<div[^>]+class="[^"]*(?:compText|fc-falcon)[^"]*"[^>]*>(.*?)</div>',
+                        rest,
+                        re.S | re.I,
+                    )
+                    snip_clean = ""
+                    if snip_match:
+                        snip_clean = " ".join(re.sub(r"<[^>]+>", " ", snip_match.group(1)).split())
+                    if real_url.startswith("http"):
+                        results.append((title_clean, real_url, snip_clean))
+        except Exception:
+            pass
+
+        # 2. Try DuckDuckGo HTML if needed
+        if len(results) < 5:
+            try:
+                resp = await self._client.post(
+                    "https://html.duckduckgo.com/html/",
+                    data={"q": query},
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+                if resp.status_code == 200:
+                    for m in re.finditer(
+                        r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?'
+                        r'(?:<a[^>]+class="result__snippet"[^>]*>(.*?)</a>)?',
+                        resp.text,
+                        re.S | re.I,
+                    ):
+                        raw_href = unescape(m.group(1))
+                        raw_title = unescape(m.group(2))
+                        raw_snip = unescape(m.group(3) or "")
+                        if "y.js" in raw_href or "ad_domain=" in raw_href:
+                            continue
+                        if raw_href.startswith("//"):
+                            raw_href = "https:" + raw_href
+                        if "uddg=" in raw_href:
+                            qs = parse_qs(urlparse(raw_href).query)
+                            raw_href = unquote(qs.get("uddg", [raw_href])[0])
+                        t_clean = " ".join(re.sub(r"<[^>]+>", " ", raw_title).split())
+                        s_clean = " ".join(re.sub(r"<[^>]+>", " ", raw_snip).split())
+                        if t_clean and raw_href.startswith("http"):
+                            results.append((t_clean, raw_href, s_clean))
+            except Exception:
+                pass
+
+        # 3. Try Wikipedia OpenSearch API if still empty
+        if not results:
+            try:
+                resp = await self._client.get(
+                    "https://en.wikipedia.org/w/api.php",
+                    params={
+                        "action": "query",
+                        "list": "search",
+                        "srsearch": query,
+                        "format": "json",
+                    },
+                )
+                if resp.status_code == 200:
+                    for item in resp.json().get("query", {}).get("search", [])[:6]:
+                        t_clean = item.get("title", "")
+                        s_clean = re.sub(r"<[^>]+>", " ", item.get("snippet", ""))
+                        u = "https://en.wikipedia.org/wiki/" + quote_plus(t_clean.replace(" ", "_"))
+                        results.append((t_clean, u, " ".join(s_clean.split())))
+            except Exception:
+                pass
+
+        lines = [f"Search Results for: {query}\n"]
+        for idx, (t_str, u_str, s_str) in enumerate(results[:10], 1):
+            self._blocks.append(("result", f"{idx}. {t_str}", u_str))
+            if s_str:
+                self._blocks.append(("text", s_str, ""))
+            self._links.append((t_str, u_str, "result"))
+            self._tag_texts.setdefault("h2", []).append(t_str)
+            self._tag_texts.setdefault("h3", []).append(t_str)
+            self._tag_texts.setdefault("a", []).append(t_str)
+            lines.append(f"[{idx}] {t_str}\n    URL: {u_str}\n    {s_str}\n")
+
+        self._body_text = "\n".join(lines)[:12000]
+
+    async def goto(self, url: str, wait_until: str = "domcontentloaded", timeout: int = 15000) -> None:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        search_q = self._extract_search_query(url)
+        if search_q:
+            await self._search_fallback(search_q, url)
+            return
+
+        self.url = url
+        self._scroll_y = 0
+        try:
+            resp = await self._client.get(url, timeout=timeout / 1000.0)
+            self.url = str(resp.url)
+            ctype = resp.headers.get("content-type", "").lower()
+            if "json" in ctype:
+                self._title = self.url
+                self._body_text = resp.text[:10000]
+                self._blocks = [("text", line, "") for line in self._body_text.splitlines() if line.strip()]
+                self._links = []
+                self._tag_texts = {"body": [self._body_text]}
+                return
+
+            parser = _DOMExtractor(self.url)
+            parser.feed(resp.text)
+            self._title = parser.title or self.url
+            self._blocks = parser.blocks
+            self._links = parser.links
+            self._tag_texts = parser.tag_texts
+
+            body_lines = []
+            if self._title:
+                body_lines.append(f"Title: {self._title}\n")
+            for kind, text, href in self._blocks:
+                if kind in ("h1", "h2", "h3"):
+                    body_lines.append(f"\n## {text}")
+                elif kind == "link":
+                    body_lines.append(f"- {text} ({href})")
+                else:
+                    body_lines.append(text)
+            self._body_text = "\n".join(body_lines)[:12000]
+
+            # If a JS-heavy site returned almost no text, supplement with search context
+            if len(self._body_text.strip()) < 120:
+                domain_q = f"{urlparse(self.url).netloc} {urlparse(self.url).path.replace('/', ' ')}"
+                await self._search_fallback(domain_q.strip(), self.url)
+        except Exception as e:
+            self._title = f"Error loading {url}"
+            self._body_text = f"Failed to load {url}: {e}"
+            self._blocks = [("h1", self._title, ""), ("text", self._body_text, "")]
+
+    def _query_selector_texts(self, selector: str) -> list[str]:
+        sel = selector.strip()
+        if sel in ("body", "html", "main", "article", "#content", "#main"):
+            return [self._body_text] if self._body_text else []
+        if sel in self._tag_texts:
+            return self._tag_texts[sel]
+        # Try individual parts of comma-separated or descendant selectors
+        for part in re.split(r"[, >+~]+", sel):
+            part = part.strip()
+            if part in self._tag_texts:
+                return self._tag_texts[part]
+        return [self._body_text] if self._body_text else []
+
+    async def inner_text(self, selector: str = "body") -> str:
+        texts = self._query_selector_texts(selector)
+        return "\n".join(texts) if texts else self._body_text
+
+    def locator(self, selector: str) -> _DummyLocator:
+        return _DummyLocator(self, selector)
+
+    def get_by_text(self, text: str, exact: bool = False) -> _DummyLocator:
+        return _DummyLocator(self, text)
+
+    def get_by_placeholder(self, text: str, exact: bool = False) -> _DummyLocator:
+        return _DummyLocator(self, text)
+
+    def get_by_label(self, text: str, exact: bool = False) -> _DummyLocator:
+        return _DummyLocator(self, text)
+
+    def get_by_role(self, role: str, name: str = "") -> _DummyLocator:
+        return _DummyLocator(self, name or role)
+
+    async def click(self, selector: str, timeout: int = 3000) -> None:
+        target = selector.strip().lower()
+        for text, href, attrs in self._links:
+            if (
+                target in text.lower()
+                or target in href.lower()
+                or (attrs and target.lstrip(".#") in attrs.lower())
+            ):
+                await self.goto(href)
+                return
+        raise ValueError(f"Element not found: {selector}")
+
+    async def fill(self, selector: str, value: str, timeout: int = 3000) -> None:
+        self._last_input = value
+
+    async def evaluate(self, expression: str) -> Any:
+        m = re.search(r"scrollBy\(\s*[^,]+,\s*(-?\d+)\s*\)", expression)
+        if m:
+            self._scroll_y = max(0, self._scroll_y + int(m.group(1)))
+        return None
+
+    async def screenshot(self, type: str = "jpeg", quality: int = 70, timeout: int = 5000) -> bytes:
+        import io as _io
+        from PIL import Image, ImageDraw
+
+        W, H = 1024, 640
+        img = Image.new("RGB", (W, H), (248, 250, 252))
+        draw = ImageDraw.Draw(img)
+
+        # Browser top chrome bar
+        draw.rectangle([0, 0, W, 68], fill=(24, 24, 28))
+        draw.ellipse([16, 14, 28, 26], fill=(239, 68, 68))
+        draw.ellipse([36, 14, 48, 26], fill=(245, 158, 11))
+        draw.ellipse([56, 14, 68, 26], fill=(34, 197, 94))
+        draw.text((84, 13), (self._title or "Browser")[:85], fill=(226, 232, 240))
+
+        # URL bar
+        draw.rounded_rectangle([16, 36, W - 16, 60], radius=6, fill=(39, 39, 44))
+        draw.text((28, 42), self.url[:125], fill=(161, 161, 170))
+
+        if self.url == "about:blank" and not self._blocks:
+            draw.text((W // 2 - 60, H // 2), "Ready to browse...", fill=(148, 163, 184))
+        else:
+            y = 84 - self._scroll_y
+            for kind, text, href in self._blocks:
+                if y > H - 20:
+                    break
+                if kind in ("h1", "h2", "h3"):
+                    if y >= 72:
+                        draw.text((32, y), text[:105], fill=(15, 23, 42))
+                    y += 26
+                elif kind == "result":
+                    if y >= 72:
+                        draw.text((32, y), text[:105], fill=(37, 99, 235))
+                        if href:
+                            draw.text((32, y + 16), href[:115], fill=(22, 163, 74))
+                    y += 36
+                elif kind == "link":
+                    if y >= 72:
+                        draw.text((40, y), f"• {text[:100]}", fill=(79, 70, 229))
+                    y += 20
+                else:
+                    for line in textwrap.wrap(text, width=115)[:4]:
+                        if 72 <= y <= H - 18:
+                            draw.text((32, y), line, fill=(51, 65, 85))
+                        y += 18
+                    y += 6
+
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        return buf.getvalue()
+
+
 class BrowserAgent:
     def __init__(self, headless: bool = True, model: str = "claude-sonnet-4-6"):
         # Force headless on Linux servers/containers without an X display
@@ -267,30 +735,16 @@ class BrowserAgent:
     async def _start_browser(self) -> None:
         try:
             self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(
+                headless=self.headless,
+                args=_CHROMIUM_ARGS,
+            )
+            self._page = await self._browser.new_page(viewport={"width": 1024, "height": 640})
+            self._page.set_default_timeout(10_000)  # 10s instead of Playwright's 30s default
         except Exception as e:
-            diag = ""
-            try:
-                import subprocess
-                from playwright._impl._driver import compute_driver_executable, get_driver_env
-                exe, cli = compute_driver_executable()
-                res = subprocess.run(
-                    [exe, cli, "--version"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                    env=get_driver_env(),
-                )
-                diag = f" [driver rc={res.returncode} err={res.stderr.strip() or res.stdout.strip()}]"
-            except Exception as de:
-                diag = f" [driver check failed: {de}]"
-            raise RuntimeError(f"{e}{diag}") from e
-
-        self._browser = await self._playwright.chromium.launch(
-            headless=self.headless,
-            args=_CHROMIUM_ARGS,
-        )
-        self._page = await self._browser.new_page(viewport={"width": 1024, "height": 640})
-        self._page.set_default_timeout(10_000)  # 10s instead of Playwright's 30s default
+            print(f"Playwright Chromium unavailable ({e}); using serverless HTTP browser fallback.")
+            await self._close_browser()
+            self._page = _HttpBrowserPage()  # type: ignore[assignment]
 
     async def _close_browser(self) -> None:
         if self._page:
