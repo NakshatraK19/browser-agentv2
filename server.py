@@ -74,11 +74,11 @@ async def run_task(req: RunRequest):
     ).start()
 
     async def stream():
-        main_loop = asyncio.get_event_loop()
+        main_loop = asyncio.get_running_loop()
         while True:
             try:
                 event = await main_loop.run_in_executor(
-                    None, lambda: q.get(block=True, timeout=0.5)
+                    None, q.get, True, 0.5
                 )
                 if event is None:
                     break

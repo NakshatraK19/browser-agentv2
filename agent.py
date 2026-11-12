@@ -1,6 +1,7 @@
 import asyncio
 import base64
 from typing import Any
+from urllib.parse import quote_plus
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
@@ -163,17 +164,18 @@ _NO_SCREENSHOT = {"extract_content", "get_page_info", "wait_and_extract"}
 
 
 def _make_gif(screenshots: list[str], width: int = 720) -> str:
-    """Stitch base64 PNG screenshots into a base64 GIF."""
+    """Stitch base64 JPEG/PNG screenshots into a base64 GIF."""
     try:
         import io as _io
         from PIL import Image
 
+        resample = getattr(Image, "Resampling", Image).LANCZOS
         frames = []
         for b64 in screenshots:
             raw = base64.b64decode(b64)
             img = Image.open(_io.BytesIO(raw)).convert("RGB")
             h = int(img.height * width / img.width)
-            frames.append(img.resize((width, h), Image.LANCZOS).quantize(colors=256))
+            frames.append(img.resize((width, h), resample).quantize(colors=256))
 
         if not frames:
             return ""
@@ -271,6 +273,7 @@ class BrowserAgent:
             ("placeholder", lambda: self._page.get_by_placeholder(selector, exact=False).first.click(timeout=t)),
             ("label",       lambda: self._page.get_by_label(selector, exact=False).first.click(timeout=t)),
             ("role-btn",    lambda: self._page.get_by_role("button", name=selector).first.click(timeout=t)),
+            ("role-link",   lambda: self._page.get_by_role("link", name=selector).first.click(timeout=t)),
         ]:
             try:
                 await fn()
@@ -280,8 +283,19 @@ class BrowserAgent:
         return f"Could not click: {selector}"
 
     async def _type_text(self, selector: str, text: str) -> str:
-        await self._page.fill(selector, text)
-        return f"Typed '{text}' into {selector}"
+        t = 3_000
+        for attempt, fn in [
+            ("css",         lambda: self._page.fill(selector, text, timeout=t)),
+            ("placeholder", lambda: self._page.get_by_placeholder(selector, exact=False).first.fill(text, timeout=t)),
+            ("label",       lambda: self._page.get_by_label(selector, exact=False).first.fill(text, timeout=t)),
+            ("role-box",    lambda: self._page.get_by_role("textbox", name=selector).first.fill(text, timeout=t)),
+        ]:
+            try:
+                await fn()
+                return f"Typed ({attempt}) '{text}' into {selector}"
+            except Exception:
+                continue
+        return f"Could not type into: {selector}"
 
     async def _press_key(self, key: str) -> str:
         await self._page.keyboard.press(key)
@@ -290,8 +304,12 @@ class BrowserAgent:
     async def _extract_content(self, selector: str | None = None) -> str:
         if selector:
             try:
-                text = await self._page.locator(selector).inner_text()
-                return text[:4000]
+                loc = self._page.locator(selector)
+                await loc.first.wait_for(state="attached", timeout=3_000)
+                texts = await loc.all_inner_texts()
+                combined = "\n".join(t.strip() for t in texts if t.strip())
+                if combined:
+                    return combined[:4000]
             except Exception:
                 pass
         text = await self._page.inner_text("body")
@@ -308,6 +326,7 @@ class BrowserAgent:
             ("css",         lambda: self._page.fill(selector, value, timeout=t)),
             ("placeholder", lambda: self._page.get_by_placeholder(selector, exact=False).first.fill(value, timeout=t)),
             ("label",       lambda: self._page.get_by_label(selector, exact=False).first.fill(value, timeout=t)),
+            ("role-box",    lambda: self._page.get_by_role("textbox", name=selector).first.fill(value, timeout=t)),
         ]:
             try:
                 await fn()
@@ -317,7 +336,7 @@ class BrowserAgent:
         return f"Could not fill: {selector}"
 
     async def _search_web(self, query: str) -> str:
-        url = "https://www.google.com/search?q=" + query.replace(" ", "+")
+        url = "https://www.google.com/search?q=" + quote_plus(query)
         await self._page.goto(url)
         return f"Searched: {query}"
 
@@ -327,8 +346,13 @@ class BrowserAgent:
 
     async def _wait_and_extract(self, selector: str, timeout: int = 5000) -> str:
         try:
-            await self._page.wait_for_selector(selector, timeout=timeout)
-            text = await self._page.locator(selector).inner_text()
+            loc = self._page.locator(selector)
+            await loc.first.wait_for(state="attached", timeout=timeout)
+            texts = await loc.all_inner_texts()
+            combined = "\n".join(t.strip() for t in texts if t.strip())
+            if combined:
+                return combined[:4000]
+            text = await loc.first.inner_text(timeout=timeout)
             return text[:4000]
         except Exception as e:
             return f"Element not found: {e}"
@@ -398,7 +422,8 @@ class BrowserAgent:
         ]
 
         for step_num in range(max_steps):
-            response = self.client.messages.create(
+            response = await asyncio.to_thread(
+                self.client.messages.create,
                 model=self.model,
                 max_tokens=4096,
                 system=SYSTEM_PROMPT,
@@ -590,7 +615,6 @@ class BrowserAgent:
                             "tool_use_id": block.id,
                             "content": [{"type": "text", "text": "Done."}],
                         })
-                        messages.append({"role": "user", "content": tool_results})
                         break
 
                     result_text, take_screenshot = await self._dispatch_tool(

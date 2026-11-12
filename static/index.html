@@ -432,7 +432,7 @@ let currentStepNum = 0;
 let lastTokensEvent = null;
 
 function setScreenshot(b64) {
-  screenshotImg.src = 'data:image/png;base64,' + b64;
+  screenshotImg.src = 'data:image/jpeg;base64,' + b64;
   screenshotImg.style.display = 'block';
   emptyState.style.display = 'none';
 }
@@ -550,6 +550,10 @@ async function run() {
       }),
     });
 
+    if (!res.ok) {
+      throw new Error(`Server error (${res.status} ${res.statusText})`);
+    }
+
     const reader = res.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -567,9 +571,7 @@ async function run() {
       }
     }
   } catch (e) {
-    statusDot.className = 'dot error';
-    runBtn.disabled = false;
-    runBtn.textContent = 'Run';
+    handleEvent({ type: 'error', message: e.message || String(e) });
     console.error(e);
   }
 }
